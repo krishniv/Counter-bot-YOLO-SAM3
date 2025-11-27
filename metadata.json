@@ -1,0 +1,7 @@
+{
+  "name": "QualityVision AI",
+  "description": "Real-time item counting and quality verification system for manufacturing lines.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

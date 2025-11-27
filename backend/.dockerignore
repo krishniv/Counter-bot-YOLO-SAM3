@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+*.log
+.env
+.env.local
+count_logs.log
+*.pt
+!yolo11n.pt
+

@@ -1,0 +1,89 @@
+import { CountLog } from "../types";
+
+// Configuration for the local FastAPI backend
+const API_BASE_URL = "http://localhost:8000";
+
+export interface DetectionBox {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  confidence: number;
+  class_id: number;
+  class_name: string;
+}
+
+export interface AnalysisResult {
+  count: number;
+  defects: number;
+  reasoning: string;
+  coordinates: DetectionBox[];
+  annotated_image?: string; // Base64 encoded annotated image from backend
+  latency_ms: number;
+}
+
+/**
+ * Sends the image frame to the local FastAPI/YOLO backend for analysis.
+ * Returns count, defects, reasoning, and detection coordinates.
+ */
+export const analyzeImageFrame = async (base64Image: string): Promise<{ count: number; defects: number; reasoning: string; coordinates?: DetectionBox[]; annotated_image?: string; latency_ms?: number }> => {
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ image: base64Image }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Backend Error: ${response.status}`);
+    }
+
+    const data: AnalysisResult = await response.json();
+    return {
+      count: data.count,
+      defects: data.defects,
+      reasoning: data.reasoning,
+      coordinates: data.coordinates,
+      annotated_image: data.annotated_image,
+      latency_ms: data.latency_ms
+    };
+  } catch (error) {
+    console.error("Vision System Error:", error);
+    return { 
+      count: 0, 
+      defects: 0, 
+      reasoning: "Connection to Backend Failed. Ensure FastAPI is running on port 8000.",
+      coordinates: [],
+      annotated_image: undefined,
+      latency_ms: 0
+    };
+  }
+};
+
+/**
+ * Requests a shift summary from the backend using Gemini API.
+ */
+export const generateShiftReport = async (logs: CountLog[]): Promise<string> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ logs }),
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch report");
+    }
+
+    const data = await response.json();
+    return data.summary;
+  } catch (error) {
+    console.error("Report Error:", error);
+    return "Error: Could not retrieve report from backend system. Ensure FastAPI backend is running and GEMINI_API_KEY is configured.";
+  }
+};
