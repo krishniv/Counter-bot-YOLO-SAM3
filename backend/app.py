@@ -8,15 +8,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ultralytics import solutions
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 
 # --- CONFIGURATION ---
 MODEL_PATH = "yolo11n.pt" 
-# Define a simple region line for counting objects as they cross it
-# Example line at y=400 across the width of a standard 1280x720 video:
-# (Note: This region assumes objects are moving horizontally or crossing a vertical line)
-# We will use a line counting region here for simplicity, similar to the Colab example.
-# Let's assume a 640-pixel wide image for this generic region:
+
 REGION_POINTS = [(50, 400), (590, 400)]  
 
 
@@ -45,20 +41,10 @@ class ImageRequest(BaseModel):
     # Accepts Base64 encoded image string (with or without 'data:image/jpeg;base64,' prefix)
     image: str  
 
-class DetectionBox(BaseModel):
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-    confidence: float
-    class_id: int
-    class_name: str
-
 class AnalysisResponse(BaseModel):
     count: int
     defects: int
     reasoning: str
-    coordinates: List[DetectionBox]
     annotated_image: Optional[str] = None  # Base64 encoded annotated image
     latency_ms: float
 
@@ -135,25 +121,21 @@ async def analyze(request: ImageRequest):
     # 2. Run object detection
     results = model_counter(im_bgr)
 
-    # 3. Get the annotated image (like results.plot_im in video processing)
+    object_count = 0
+    try:
+        if hasattr(results, 'total_tracks'):
+            object_count = int(results.total_tracks)
+    except Exception as e:
+        print(f"Warning: Could not extract total_tracks: {e}")
+        object_count = 0
+    
+    # 4. Get the annotated image (like results.plot_im in video processing)
     annotated_image_bgr = None
     try:
         if hasattr(results, 'plot_im'):
             # ObjectCounter returns plot_im with bounding boxes drawn (BGR format)
             annotated_image_bgr = results.plot_im
-        elif hasattr(results, 'plot'):
-            # Alternative: use plot() method if available
-            annotated_image_bgr = results.plot()
-        elif hasattr(results, 'orig_img'):
-            # Fallback: use original image if plotting not available
-            annotated_image_bgr = results.orig_img.copy()
-        # If results is a list (some YOLO versions), get first element
-        elif isinstance(results, list) and len(results) > 0:
-            first_result = results[0]
-            if hasattr(first_result, 'plot_im'):
-                annotated_image_bgr = first_result.plot_im
-            elif hasattr(first_result, 'plot'):
-                annotated_image_bgr = first_result.plot()
+        
     except Exception as e:
         print(f"Warning: Could not extract annotated image: {e}")
         annotated_image_bgr = None
@@ -167,57 +149,10 @@ async def analyze(request: ImageRequest):
             print(f"Warning: Could not encode annotated image: {e}")
             annotated_image_base64 = None
 
-    # 4. Extract bounding boxes, confidences, and class IDs
-    detection_boxes = []
-    object_count = 0
+    # 5. Calculate defects (if needed, can be based on other criteria)
     defects_count = 0
     
-    if hasattr(results, 'boxes') and results.boxes is not None:
-        boxes = results.boxes
-        
-        # Get arrays from tensor/numpy format
-        if hasattr(boxes, 'xyxy'):
-            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
-        else:
-            xyxy = np.array([])
-            
-        if hasattr(boxes, 'conf'):
-            confidences = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
-        else:
-            confidences = np.array([])
-            
-        if hasattr(boxes, 'cls'):
-            class_ids = boxes.cls.cpu().numpy().astype(int) if hasattr(boxes.cls, 'cpu') else boxes.cls.astype(int)
-        else:
-            class_ids = np.array([])
-        
-        object_count = len(xyxy) if len(xyxy.shape) > 0 else 0
-        
-        # Build detection boxes list
-        for i in range(object_count):
-            if len(xyxy.shape) == 2 and i < len(xyxy):
-                x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
-                confidence = float(confidences[i]) if i < len(confidences) else 0.0
-                class_id = int(class_ids[i]) if i < len(class_ids) else 0
-                class_name = model_names.get(class_id, f"class_{class_id}") if model_names else f"class_{class_id}"
-                
-                detection_boxes.append(DetectionBox(
-                    x1=x1,
-                    y1=y1,
-                    x2=x2,
-                    y2=y2,
-                    confidence=confidence,
-                    class_id=class_id,
-                    class_name=class_name
-                ))
-                
-                # Count defects: low confidence detections or specific defect classes
-                # You can customize this logic based on your use case
-                if confidence < 0.3:  # Low confidence = potential defect
-                    defects_count += 1
-    
-    # 5. Generate reasoning
-    reasoning = f"Detected {object_count} object(s)"
+    reasoning = f"Detected {object_count} tracked object(s)"
     if defects_count > 0:
         reasoning += f", {defects_count} with low confidence or flagged as defects"
     if object_count == 0:
@@ -229,7 +164,6 @@ async def analyze(request: ImageRequest):
         count=object_count,
         defects=defects_count,
         reasoning=reasoning,
-        coordinates=detection_boxes,
         annotated_image=annotated_image_base64,
         latency_ms=latency_ms,
     )

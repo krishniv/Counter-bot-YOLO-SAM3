@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Camera, RefreshCw, AlertTriangle, CheckCircle, VideoOff, Upload, Play, Pause, Video } from 'lucide-react';
-import { analyzeImageFrame, DetectionBox } from '../services/visionService';
+import { analyzeImageFrame } from '../services/visionService';
 import { CountLog } from '../types';
 
 type FeedMode = 'camera' | 'video';
@@ -25,21 +25,22 @@ interface LiveMonitorProps {
 const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [feedMode, setFeedMode] = useState<FeedMode>('camera');
   const [streamActive, setStreamActive] = useState(false); // Indicates if a stream (camera/video) is playing/ready
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastAnalysis, setLastAnalysis] = useState<{count: number, defects: number, reasoning: string} | null>(null);
-  const [currentDetections, setCurrentDetections] = useState<DetectionBox[]>([]);
   const [annotatedImage, setAnnotatedImage] = useState<string | null>(null); // Backend-annotated image
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false); // Only for video file loaded state
 
-  // Auto-analysis interval ref
-  const intervalRef = useRef<number | null>(null);
+  // Refs for frame capture optimization
+  const frameRequestRef = useRef<number | null>(null);
+  const lastCaptureTimeRef = useRef<number>(0);
+  const pendingAnalysisRef = useRef<boolean>(false);
+  const MIN_CAPTURE_INTERVAL = 100; // Minimum 100ms between captures (10 FPS max)
 
   // Helper to stop any active media stream
   const stopMediaStream = useCallback(() => {
@@ -62,10 +63,14 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     stopMediaStream(); 
     revokeVideoURL(); // Ensure old video URL is revoked
 
-    // 2. Clear interval if running
-    if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+    // 2. Cancel any pending frame requests
+    if (frameRequestRef.current !== null) {
+      if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+        (HTMLVideoElement.prototype as any).cancelVideoFrameCallback(frameRequestRef.current);
+      } else {
+        cancelAnimationFrame(frameRequestRef.current);
+      }
+      frameRequestRef.current = null;
     }
 
     try {
@@ -125,116 +130,24 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     }
   };
 
-  // Function to draw bounding boxes on overlay canvas
-  const drawBoundingBoxes = useCallback(() => {
-    // Skip drawing if we have annotated image from backend
-    if (annotatedImage) return;
-    
-    if (!overlayCanvasRef.current || !videoRef.current || currentDetections.length === 0) {
-      // Clear canvas if no detections
-      if (overlayCanvasRef.current) {
-        const ctx = overlayCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-        }
-      }
-      return;
-    }
 
-    const overlay = overlayCanvasRef.current;
-    const video = videoRef.current;
-    const ctx = overlay.getContext('2d');
-    
-    if (!ctx) return;
-
-    // Get video display dimensions (may differ from videoWidth/Height due to CSS object-fit)
-    const rect = video.getBoundingClientRect();
-    const displayWidth = rect.width;
-    const displayHeight = rect.height;
-    const videoWidth = video.videoWidth;
-    const videoHeight = video.videoHeight;
-
-    if (videoWidth === 0 || videoHeight === 0) return;
-
-    // Set canvas size to match video display size
-    overlay.width = displayWidth;
-    overlay.height = displayHeight;
-
-    // Calculate scale factors based on how the video is displayed
-    // The video uses object-cover, so we need to account for aspect ratio
-    const videoAspect = videoWidth / videoHeight;
-    const displayAspect = displayWidth / displayHeight;
-    
-    let scaleX: number, scaleY: number, offsetX: number, offsetY: number;
-    
-    if (videoAspect > displayAspect) {
-      // Video is wider - letterboxing on top/bottom
-      scaleX = displayWidth / videoWidth;
-      scaleY = scaleX;
-      offsetX = 0;
-      offsetY = (displayHeight - videoHeight * scaleY) / 2;
-    } else {
-      // Video is taller - letterboxing on left/right
-      scaleY = displayHeight / videoHeight;
-      scaleX = scaleY;
-      offsetX = (displayWidth - videoWidth * scaleX) / 2;
-      offsetY = 0;
-    }
-
-    // Clear previous drawings
-    ctx.clearRect(0, 0, displayWidth, displayHeight);
-
-    // Draw each detection box
-    currentDetections.forEach((detection) => {
-      const x1 = detection.x1 * scaleX + offsetX;
-      const y1 = detection.y1 * scaleY + offsetY;
-      const x2 = detection.x2 * scaleX + offsetX;
-      const y2 = detection.y2 * scaleY + offsetY;
-      const width = x2 - x1;
-      const height = y2 - y1;
-
-      // Determine box color based on confidence
-      // Low confidence or misclassified items in red, others in green/cyan
-      const isLowConfidence = detection.confidence < 0.3;
-      const boxColor = isLowConfidence ? '#ef4444' : '#06b6d4'; // red for low confidence, cyan for good
-      const labelBgColor = isLowConfidence ? 'rgba(239, 68, 68, 0.8)' : 'rgba(6, 182, 212, 0.8)';
-
-      // Draw bounding box
-      ctx.strokeStyle = boxColor;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x1, y1, width, height);
-
-      // Prepare label text
-      const label = `${detection.class_name} ${detection.confidence.toFixed(2)}`;
-      
-      // Measure text for background
-      ctx.font = 'bold 12px monospace';
-      const textMetrics = ctx.measureText(label);
-      const textWidth = textMetrics.width;
-      const textHeight = 16;
-      const padding = 4;
-
-      // Draw label background
-      ctx.fillStyle = labelBgColor;
-      ctx.fillRect(
-        x1,
-        y1 - textHeight - padding * 2,
-        textWidth + padding * 2,
-        textHeight + padding * 2
-      );
-
-      // Draw label text
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(label, x1 + padding, y1 - padding);
-    });
-  }, [currentDetections, annotatedImage]);
-
-  const captureAndAnalyze = useCallback(async () => {
+  const captureAndAnalyze = useCallback(async (skipThrottle = false) => {
     // Validate prerequisites
-    if (!videoRef.current || !canvasRef.current || isAnalyzing || !streamActive) return;
+    if (!videoRef.current || !canvasRef.current || !streamActive) return;
     
     // For video mode, only analyze if video is loaded, playing, and not ended
     if (feedMode === 'video' && (!videoLoaded || videoRef.current.paused || videoRef.current.ended)) {
+      return;
+    }
+
+    // Throttle captures to prevent overwhelming the backend
+    const now = Date.now();
+    if (!skipThrottle && now - lastCaptureTimeRef.current < MIN_CAPTURE_INTERVAL) {
+      return;
+    }
+    
+    // Skip if already processing (but allow queue for smoother flow)
+    if (pendingAnalysisRef.current && !skipThrottle) {
       return;
     }
 
@@ -243,72 +156,68 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     const videoHeight = videoRef.current.videoHeight;
     
     if (!videoWidth || !videoHeight || videoWidth === 0 || videoHeight === 0) {
-      console.warn("Video dimensions not ready:", { videoWidth, videoHeight });
       return;
     }
 
+    lastCaptureTimeRef.current = now;
+    pendingAnalysisRef.current = true;
     setIsAnalyzing(true);
-    const context = canvasRef.current.getContext('2d', { 
-      willReadFrequently: false, // Optimize for drawing, not reading
-      alpha: false // No transparency needed for JPEG
-    });
-    
-    if (!context) {
-      console.error("Failed to get canvas context");
-      setIsAnalyzing(false);
-      return;
-    }
 
     try {
+      const context = canvasRef.current.getContext('2d', { 
+        willReadFrequently: false,
+        alpha: false
+      });
+      
+      if (!context) {
+        throw new Error("Failed to get canvas context");
+      }
+
       // Set canvas dimensions to match video frame exactly
       canvasRef.current.width = videoWidth;
       canvasRef.current.height = videoHeight;
       
-      // Draw current video frame to canvas
-      // This captures the frame as it appears in the video element
-      context.drawImage(
-        videoRef.current, 
-        0, 0, 
-        videoWidth, 
-        videoHeight
-      );
+      // Draw current video frame to canvas (non-blocking)
+      context.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
       
-      // Convert canvas to base64 JPEG (quality 0.9 for better quality, backend can handle it)
-      // Format: "data:image/jpeg;base64,<base64data>"
-      const imageData = canvasRef.current.toDataURL('image/jpeg', 0.9);
+      // Convert canvas to base64 JPEG (lower quality for speed: 0.7)
+      const imageData = canvasRef.current.toDataURL('image/jpeg', 0.7);
       
-      // Validate that we got image data
       if (!imageData || imageData.length < 100) {
         throw new Error("Failed to capture image data from canvas");
       }
       
-      // Call Backend Service - backend expects base64 string (handles data URL format)
-      const result = await analyzeImageFrame(imageData);
-      
-      setLastAnalysis(result);
-      setCurrentDetections(result.coordinates || []);
-      
-      // Store annotated image from backend if available (like results.plot_im)
-      if (result.annotated_image) {
-        setAnnotatedImage(result.annotated_image);
-      }
-      
-      // Log the result
-      onNewLog({
-        id: generateUUID(),
-        timestamp: new Date().toISOString(),
-        totalCount: result.count,
-        goodCount: Math.max(0, result.count - result.defects),
-        defectCount: result.defects,
-        imageUrl: result.annotated_image || imageData // Use annotated image if available
+      // Call Backend Service asynchronously (don't await immediately to keep stream flowing)
+      analyzeImageFrame(imageData).then((result) => {
+        setLastAnalysis(result);
+        
+        // Store annotated image from backend if available
+        if (result.annotated_image) {
+          setAnnotatedImage(result.annotated_image);
+        }
+        
+        // Log the result
+        onNewLog({
+          id: generateUUID(),
+          timestamp: new Date().toISOString(),
+          totalCount: result.count,
+          goodCount: Math.max(0, result.count - result.defects),
+          defectCount: result.defects,
+          imageUrl: result.annotated_image || imageData
+        });
+      }).catch((error) => {
+        console.error("Analysis failed:", error);
+      }).finally(() => {
+        setIsAnalyzing(false);
+        pendingAnalysisRef.current = false;
       });
+      
     } catch (error) {
-      console.error("Analysis failed:", error);
-      // Optionally set an error state here
-    } finally {
+      console.error("Capture failed:", error);
       setIsAnalyzing(false);
+      pendingAnalysisRef.current = false;
     }
-  }, [isAnalyzing, onNewLog, feedMode, videoLoaded, streamActive]);
+  }, [onNewLog, feedMode, videoLoaded, streamActive]);
 
   // Initialize camera/video when feedMode changes. Main cleanup on unmount.
   useEffect(() => {
@@ -326,32 +235,105 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     return () => {
       stopMediaStream();
       revokeVideoURL();
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (frameRequestRef.current !== null) {
+        const video = videoRef.current;
+        if (video && 'cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+          (HTMLVideoElement.prototype as any).cancelVideoFrameCallback.call(video, frameRequestRef.current);
+        } else {
+          cancelAnimationFrame(frameRequestRef.current);
+        }
+        frameRequestRef.current = null;
+      }
     };
   }, [feedMode, startCamera, stopMediaStream, revokeVideoURL]); // Added helpers to dependency array
 
-  // Auto-sampling: Runs every 2000ms (2s) when active
+  // Optimized frame capture using requestVideoFrameCallback (for camera) or timeupdate (for video)
   useEffect(() => {
-    // Clear any existing interval when dependencies change
-    if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+    const video = videoRef.current;
+    if (!video || !streamActive) {
+      // Cancel any pending frame requests
+      if (frameRequestRef.current !== null) {
+        if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+          (HTMLVideoElement.prototype as any).cancelVideoFrameCallback(frameRequestRef.current);
+        } else {
+          cancelAnimationFrame(frameRequestRef.current);
+        }
+        frameRequestRef.current = null;
+      }
+      return;
     }
 
-    const shouldAnalyze = streamActive && !isAnalyzing && 
-                        (feedMode === 'camera' || (feedMode === 'video' && isPlaying));
-    
-    if (shouldAnalyze) {
-      intervalRef.current = window.setInterval(() => {
-        captureAndAnalyze();
-      }, 2000);
-    }
-
-    // Cleanup when effect re-runs or component unmounts
-    return () => { 
-        if (intervalRef.current) clearInterval(intervalRef.current); 
+    // Type-safe wrapper for requestVideoFrameCallback
+    const requestVideoFrame = (callback: (now: number, metadata: any) => void): number => {
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        return (HTMLVideoElement.prototype as any).requestVideoFrameCallback.call(video, callback);
+      } else {
+        // Fallback: use requestAnimationFrame
+        return requestAnimationFrame(() => callback(performance.now(), {})) as unknown as number;
+      }
     };
-  }, [streamActive, captureAndAnalyze, isAnalyzing, feedMode, isPlaying]); // Added key dependencies
+
+    const cancelVideoFrame = (handle: number) => {
+      if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+        (HTMLVideoElement.prototype as any).cancelVideoFrameCallback.call(video, handle);
+      } else {
+        cancelAnimationFrame(handle);
+      }
+    };
+
+    // For camera feed: use requestVideoFrameCallback for smooth, frame-synced capture
+    if (feedMode === 'camera') {
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        // Use native requestVideoFrameCallback for frame-synced capture
+        const captureFrame = (now: number, metadata: any) => {
+          captureAndAnalyze();
+          // Request next frame
+          if (video && streamActive) {
+            frameRequestRef.current = requestVideoFrame(captureFrame);
+          }
+        };
+        frameRequestRef.current = requestVideoFrame(captureFrame);
+      } else {
+        // Fallback: use requestAnimationFrame for smooth capture (60fps, but throttled by MIN_CAPTURE_INTERVAL)
+        const fallbackCapture = () => {
+          if (video && streamActive) {
+            captureAndAnalyze();
+            frameRequestRef.current = requestAnimationFrame(fallbackCapture) as unknown as number;
+          }
+        };
+        frameRequestRef.current = requestAnimationFrame(fallbackCapture) as unknown as number;
+      }
+    } 
+    // For video file: use timeupdate event for frame-accurate capture
+    else if (feedMode === 'video' && videoLoaded && isPlaying) {
+      const handleTimeUpdate = () => {
+        captureAndAnalyze();
+      };
+      
+      // Capture on timeupdate (fires during playback)
+      video.addEventListener('timeupdate', handleTimeUpdate);
+      
+      return () => {
+        video.removeEventListener('timeupdate', handleTimeUpdate);
+        if (frameRequestRef.current !== null) {
+          cancelVideoFrame(frameRequestRef.current);
+          frameRequestRef.current = null;
+        }
+      };
+    }
+
+    // Cleanup
+    return () => {
+      if (frameRequestRef.current !== null) {
+        if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+          (HTMLVideoElement.prototype as any).cancelVideoFrameCallback.call(video, frameRequestRef.current);
+        } else {
+          cancelAnimationFrame(frameRequestRef.current);
+        }
+        frameRequestRef.current = null;
+      }
+    };
+  }, [streamActive, captureAndAnalyze, feedMode, videoLoaded, isPlaying]);
 
   // Handle video events (ended, play, pause, loadeddata)
   useEffect(() => {
@@ -376,42 +358,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     };
   }, [handleVideoLoaded]); // Removed videoFile as a dependency, as it's not strictly necessary here
 
-  // Redraw bounding boxes when detections change or video resizes
+  // Clear annotated image when stream stops
   useEffect(() => {
     if (!streamActive) {
-      // Clear detections and annotated image when stream stops
-      setCurrentDetections([]);
       setAnnotatedImage(null);
-      if (overlayCanvasRef.current) {
-        const ctx = overlayCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-        }
-      }
-      return;
     }
-
-    drawBoundingBoxes();
-
-    // Redraw on window resize
-    const handleResize = () => {
-      drawBoundingBoxes();
-    };
-    window.addEventListener('resize', handleResize);
-
-    // Redraw periodically to keep boxes aligned with video (in case of CSS transforms)
-    // Only if not using annotated image from backend
-    const redrawInterval = setInterval(() => {
-      if (streamActive && currentDetections.length > 0 && !annotatedImage) {
-        drawBoundingBoxes();
-      }
-    }, 100);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      clearInterval(redrawInterval);
-    };
-  }, [currentDetections, streamActive, drawBoundingBoxes, annotatedImage]);
+  }, [streamActive]);
 
   return (
     <div className="space-y-4">
@@ -451,22 +403,16 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
           className={`w-full h-full object-cover ${streamActive ? 'block' : 'hidden'}`}
         />
         
-        {/* Backend-annotated image overlay (like results.plot_im) */}
+        {/* Backend-annotated image overlay (like results.plot_im) - blend with video */}
         {annotatedImage && (
           <img 
             src={annotatedImage}
             alt="Annotated detection"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-            style={{ zIndex: 9 }}
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-200"
+            style={{ zIndex: 9, opacity: 0.95 }}
+            onError={() => setAnnotatedImage(null)} // Fallback if image fails to load
           />
         )}
-        
-        {/* Overlay canvas for drawing bounding boxes (fallback if no annotated image) */}
-        <canvas 
-          ref={overlayCanvasRef}
-          className={`absolute inset-0 w-full h-full pointer-events-none ${annotatedImage ? 'hidden' : ''}`}
-          style={{ zIndex: 10 }}
-        />
         
         <canvas ref={canvasRef} className="hidden" />
         <input

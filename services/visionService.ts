@@ -3,30 +3,19 @@ import { CountLog } from "../types";
 // Configuration for the local FastAPI backend
 const API_BASE_URL = "http://localhost:8000";
 
-export interface DetectionBox {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  confidence: number;
-  class_id: number;
-  class_name: string;
-}
-
 export interface AnalysisResult {
   count: number;
   defects: number;
   reasoning: string;
-  coordinates: DetectionBox[];
   annotated_image?: string; // Base64 encoded annotated image from backend
   latency_ms: number;
 }
 
 /**
  * Sends the image frame to the local FastAPI/YOLO backend for analysis.
- * Returns count, defects, reasoning, and detection coordinates.
+ * Returns count, defects, reasoning, and annotated image.
  */
-export const analyzeImageFrame = async (base64Image: string): Promise<{ count: number; defects: number; reasoning: string; coordinates?: DetectionBox[]; annotated_image?: string; latency_ms?: number }> => {
+export const analyzeImageFrame = async (base64Image: string): Promise<{ count: number; defects: number; reasoning: string; annotated_image?: string; latency_ms?: number }> => {
   
   try {
     const response = await fetch(`${API_BASE_URL}/analyze`, {
@@ -46,7 +35,6 @@ export const analyzeImageFrame = async (base64Image: string): Promise<{ count: n
       count: data.count,
       defects: data.defects,
       reasoning: data.reasoning,
-      coordinates: data.coordinates,
       annotated_image: data.annotated_image,
       latency_ms: data.latency_ms
     };
@@ -56,7 +44,6 @@ export const analyzeImageFrame = async (base64Image: string): Promise<{ count: n
       count: 0, 
       defects: 0, 
       reasoning: "Connection to Backend Failed. Ensure FastAPI is running on port 8000.",
-      coordinates: [],
       annotated_image: undefined,
       latency_ms: 0
     };
