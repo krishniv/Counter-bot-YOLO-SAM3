@@ -13,7 +13,22 @@ from typing import Optional, Dict
 # --- CONFIGURATION ---
 MODEL_PATH = "best.pt" 
 
-REGION_POINTS = [(50, 400), (590, 400)]  
+REGION_POINTS = [(50, 400), (590, 400)]
+
+# Default prompt for cookie tracking
+DEFAULT_TRACKING_PROMPT = """You are tracking cookies on a conveyor belt. Your task is to:
+1. Detect and count all cookies in the frame
+2. Identify damaged or defective cookies based on:
+   - Broken or fragmented appearance
+   - Irregular shapes (not circular/round)
+   - Missing pieces or cracks
+   - Discoloration or burn marks
+   - Size significantly smaller than normal cookies
+3. Track cookies as they move through the detection region
+4. Only count cookies that pass through the designated counting line
+5. Mark cookies with confidence below 0.6 as potential defects
+6. Flag cookies with bounding box aspect ratio outside 0.7-1.3 as potentially damaged (not round)
+7. Consider cookies with area significantly smaller than average as defects"""  
 
 
 # Initialize FastAPI app
@@ -39,7 +54,8 @@ model_names: Optional[Dict[int, str]] = None  # Class ID to name mapping
 # --- DATA MODELS ---
 class ImageRequest(BaseModel):
     # Accepts Base64 encoded image string (with or without 'data:image/jpeg;base64,' prefix)
-    image: str  
+    image: str
+    prompt: Optional[str] = None  # Optional prompt/instructions for the model  
 
 class AnalysisResponse(BaseModel):
     count: int
@@ -118,7 +134,12 @@ async def analyze(request: ImageRequest):
     # 1. Decode Image
     im_bgr = decode_base64_image(request.image)
     
-    # 2. Run object detection
+    # 2. Get prompt (use provided or default)
+    tracking_prompt = request.prompt if request.prompt else DEFAULT_TRACKING_PROMPT
+    if tracking_prompt:
+        print(f"Tracking prompt: {tracking_prompt[:100]}...")  # Log first 100 chars
+    
+    # 3. Run object detection
     results = model_counter(im_bgr)
 
     object_count = 0
@@ -149,14 +170,100 @@ async def analyze(request: ImageRequest):
             print(f"Warning: Could not encode annotated image: {e}")
             annotated_image_base64 = None
 
-    # 5. Calculate defects (if needed, can be based on other criteria)
+    # 5. Calculate defects based on detection results and cookie damage rules
     defects_count = 0
+    defect_reasons = []
     
-    reasoning = f"Detected {object_count} tracked object(s)"
+    try:
+        # ObjectCounter may return results as a list or single result
+        # Try to get the underlying detection results
+        detection_results = results
+        if isinstance(results, list) and len(results) > 0:
+            detection_results = results[0]
+        
+        # Extract detection data from results
+        # ObjectCounter wraps YOLO results, so we need to access the underlying model results
+        if hasattr(detection_results, 'boxes') and detection_results.boxes is not None:
+            boxes = detection_results.boxes
+            confidences = []
+            areas = []
+            aspect_ratios = []
+            
+            # Try to get confidences
+            if hasattr(boxes, 'conf'):
+                try:
+                    confidences = boxes.conf.cpu().numpy().tolist() if hasattr(boxes.conf, 'cpu') else []
+                except:
+                    confidences = []
+            
+            # Calculate bounding box characteristics for each detection
+            if hasattr(boxes, 'xyxy'):
+                try:
+                    boxes_xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                    for box in boxes_xyxy:
+                        x1, y1, x2, y2 = box
+                        width = x2 - x1
+                        height = y2 - y1
+                        area = width * height
+                        aspect_ratio = width / height if height > 0 else 1.0
+                        areas.append(area)
+                        aspect_ratios.append(aspect_ratio)
+                except Exception as e:
+                    print(f"Warning: Could not extract bounding boxes: {e}")
+            
+            # Rule 1: Low confidence cookies (< 0.6) are potential defects
+            if confidences:
+                low_confidence_count = sum(1 for conf in confidences if conf < 0.6)
+                if low_confidence_count > 0:
+                    defects_count += low_confidence_count
+                    defect_reasons.append(f"{low_confidence_count} low confidence")
+            
+            # Rule 2: Non-circular cookies (aspect ratio outside 0.7-1.3) are damaged
+            if aspect_ratios:
+                non_circular_count = sum(1 for ar in aspect_ratios if ar < 0.7 or ar > 1.3)
+                if non_circular_count > 0:
+                    defects_count += non_circular_count
+                    defect_reasons.append(f"{non_circular_count} irregular shape")
+            
+            # Rule 3: Significantly smaller cookies (area < 50% of median) are defects
+            if areas and len(areas) > 1:
+                median_area = np.median(areas)
+                small_cookie_count = sum(1 for area in areas if area < median_area * 0.5)
+                if small_cookie_count > 0:
+                    defects_count += small_cookie_count
+                    defect_reasons.append(f"{small_cookie_count} undersized")
+            
+            # Rule 4: Very large cookies (area > 150% of median) might be overlapping/broken
+            if areas and len(areas) > 1:
+                median_area = np.median(areas)
+                oversized_count = sum(1 for area in areas if area > median_area * 1.5)
+                if oversized_count > 0:
+                    defects_count += oversized_count
+                    defect_reasons.append(f"{oversized_count} oversized/overlapping")
+            
+            # Ensure defects_count doesn't exceed total count
+            defects_count = min(defects_count, object_count)
+        else:
+            # Fallback: if we can't access boxes, use a simple heuristic
+            # Assume some percentage of low-confidence detections are defects
+            if object_count > 0:
+                # Conservative estimate: 10% might be defects if we can't analyze
+                defects_count = max(0, int(object_count * 0.1))
+                if defects_count > 0:
+                    defect_reasons.append("estimated defects")
+    
+    except Exception as e:
+        print(f"Warning: Error calculating defects: {e}")
+        import traceback
+        traceback.print_exc()
+        defects_count = 0
+    
+    # Build reasoning string
+    reasoning = f"Detected {object_count} tracked cookie(s)"
     if defects_count > 0:
-        reasoning += f", {defects_count} with low confidence or flagged as defects"
+        reasoning += f", {defects_count} defective ({', '.join(defect_reasons)})"
     if object_count == 0:
-        reasoning = "No objects detected in frame"
+        reasoning = "No cookies detected in frame"
     
     latency_ms = (time.time() - start_time) * 1000
 

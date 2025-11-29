@@ -13,6 +13,11 @@ const App: React.FC = () => {
     setLogs(prev => [...prev, log]);
   };
 
+  // Function to reset session - clear all logs
+  const handleResetSession = () => {
+    setLogs([]);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Navbar */}
@@ -60,7 +65,7 @@ const App: React.FC = () => {
                     <h2 className="text-2xl font-bold text-white">Operator Dashboard</h2>
                     <p className="text-slate-400">Real-time conveyor monitoring and visual inspection.</p>
                 </div>
-                <Dashboard logs={logs} onNewLog={handleNewLog} />
+                <Dashboard logs={logs} onNewLog={handleNewLog} onResetSession={handleResetSession} />
             </div>
         ) : (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">

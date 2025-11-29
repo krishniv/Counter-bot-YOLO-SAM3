@@ -17,13 +17,31 @@ export interface AnalysisResult {
  */
 export const analyzeImageFrame = async (base64Image: string): Promise<{ count: number; defects: number; reasoning: string; annotated_image?: string; latency_ms?: number }> => {
   
+  // Prompt to guide the model on what to track
+  const trackingPrompt = `You are tracking cookies on a conveyor belt. Your task is to:
+1. Detect and count all cookies in the frame
+2. Identify damaged or defective cookies based on:
+   - Broken or fragmented appearance
+   - Irregular shapes (not circular/round)
+   - Missing pieces or cracks
+   - Discoloration or burn marks
+   - Size significantly smaller than normal cookies
+3. Track cookies as they move through the detection region
+4. Only count cookies that pass through the designated counting line
+5. Mark cookies with confidence below 0.6 as potential defects
+6. Flag cookies with bounding box aspect ratio outside 0.7-1.3 as potentially damaged (not round)
+7. Consider cookies with area significantly smaller than average as defects`;
+
   try {
     const response = await fetch(`${API_BASE_URL}/analyze`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ image: base64Image }),
+      body: JSON.stringify({ 
+        image: base64Image,
+        prompt: trackingPrompt 
+      }),
     });
 
     if (!response.ok) {

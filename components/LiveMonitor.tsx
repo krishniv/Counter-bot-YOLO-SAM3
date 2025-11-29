@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Camera, RefreshCw, AlertTriangle, CheckCircle, VideoOff, Upload, Play, Pause, Video } from 'lucide-react';
+import { Camera, RefreshCw, AlertTriangle, CheckCircle, VideoOff, Upload, Play, Pause, Video, RotateCcw } from 'lucide-react';
 import { analyzeImageFrame } from '../services/visionService';
 import { CountLog } from '../types';
 
@@ -20,9 +20,10 @@ const generateUUID = (): string => {
 
 interface LiveMonitorProps {
   onNewLog: (log: CountLog) => void;
+  onResetSession?: () => void;
 }
 
-const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
+const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -35,11 +36,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false); // Only for video file loaded state
+  const [annotationOpacity, setAnnotationOpacity] = useState(0.95); // Smooth annotation overlay
 
   // Refs for frame capture optimization
   const frameRequestRef = useRef<number | null>(null);
   const lastCaptureTimeRef = useRef<number>(0);
   const pendingAnalysisRef = useRef<boolean>(false);
+  const annotationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const MIN_CAPTURE_INTERVAL = 100; // Minimum 100ms between captures (10 FPS max)
 
   // Helper to stop any active media stream
@@ -57,6 +60,50 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
       videoRef.current.src = ""; // Clear src to prevent memory leak
     }
   }, []);
+
+  // Reset session - clear all state and stop streams
+  const resetSession = useCallback(() => {
+    // Stop all media streams
+    stopMediaStream();
+    revokeVideoURL();
+    
+    // Cancel frame requests
+    if (frameRequestRef.current !== null) {
+      if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+        (HTMLVideoElement.prototype as any).cancelVideoFrameCallback(frameRequestRef.current);
+      } else {
+        cancelAnimationFrame(frameRequestRef.current);
+      }
+      frameRequestRef.current = null;
+    }
+    
+    // Clear annotation timeout
+    if (annotationTimeoutRef.current) {
+      clearTimeout(annotationTimeoutRef.current);
+      annotationTimeoutRef.current = null;
+    }
+    
+    // Reset all state
+    setStreamActive(false);
+    setIsAnalyzing(false);
+    setLastAnalysis(null);
+    setAnnotatedImage(null);
+    setVideoFile(null);
+    setIsPlaying(false);
+    setVideoLoaded(false);
+    pendingAnalysisRef.current = false;
+    lastCaptureTimeRef.current = 0;
+    
+    // Clear file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    
+    // Notify parent to reset logs
+    if (onResetSession) {
+      onResetSession();
+    }
+  }, [stopMediaStream, revokeVideoURL, onResetSession]);
 
   const startCamera = useCallback(async () => {
     // 1. Cleanup before starting new stream
@@ -191,20 +238,30 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
       analyzeImageFrame(imageData).then((result) => {
         setLastAnalysis(result);
         
-        // Store annotated image from backend if available
+        // Store annotated image from backend if available with smooth transition
         if (result.annotated_image) {
+          // Clear previous timeout
+          if (annotationTimeoutRef.current) {
+            clearTimeout(annotationTimeoutRef.current);
+          }
+          // Smooth fade-in for annotation
+          setAnnotationOpacity(0);
           setAnnotatedImage(result.annotated_image);
+          // Trigger fade-in after a brief delay
+          setTimeout(() => setAnnotationOpacity(0.95), 10);
         }
         
-        // Log the result
-        onNewLog({
-          id: generateUUID(),
-          timestamp: new Date().toISOString(),
-          totalCount: result.count,
-          goodCount: Math.max(0, result.count - result.defects),
-          defectCount: result.defects,
-          imageUrl: result.annotated_image || imageData
-        });
+        // Only log if there are defects (as per requirement)
+        if (result.defects > 0) {
+          onNewLog({
+            id: generateUUID(),
+            timestamp: new Date().toISOString(),
+            totalCount: result.count,
+            goodCount: Math.max(0, result.count - result.defects),
+            defectCount: result.defects,
+            imageUrl: result.annotated_image || imageData
+          });
+        }
       }).catch((error) => {
         console.error("Analysis failed:", error);
       }).finally(() => {
@@ -304,10 +361,18 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
         frameRequestRef.current = requestAnimationFrame(fallbackCapture) as unknown as number;
       }
     } 
-    // For video file: use timeupdate event for frame-accurate capture
+    // For video file: use timeupdate event for frame-accurate capture with throttling
     else if (feedMode === 'video' && videoLoaded && isPlaying) {
+      let lastTimeUpdate = 0;
+      const TIME_UPDATE_THROTTLE = 0.1; // Capture every 100ms (10 FPS max for video)
+      
       const handleTimeUpdate = () => {
-        captureAndAnalyze();
+        const currentTime = video.currentTime;
+        // Throttle to prevent too frequent captures
+        if (currentTime - lastTimeUpdate >= TIME_UPDATE_THROTTLE) {
+          lastTimeUpdate = currentTime;
+          captureAndAnalyze();
+        }
       };
       
       // Capture on timeupdate (fires during playback)
@@ -340,7 +405,23 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
     const video = videoRef.current;
     if (!video) return;
 
-    const handleEnded = () => setIsPlaying(false);
+    const handleEnded = () => {
+      setIsPlaying(false);
+      // Graceful exit when video ends - stop analysis and cleanup
+      if (frameRequestRef.current !== null) {
+        if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+          (HTMLVideoElement.prototype as any).cancelVideoFrameCallback(frameRequestRef.current);
+        } else {
+          cancelAnimationFrame(frameRequestRef.current);
+        }
+        frameRequestRef.current = null;
+      }
+      pendingAnalysisRef.current = false;
+      setIsAnalyzing(false);
+      // Fade out annotation smoothly
+      setAnnotationOpacity(0);
+      setTimeout(() => setAnnotatedImage(null), 300);
+    };
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
     
@@ -367,29 +448,39 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
 
   return (
     <div className="space-y-4">
-      {/* Mode Selector */}
-      <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700 w-fit">
+      {/* Mode Selector and Reset Button */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700 w-fit">
+          <button
+            onClick={() => setFeedMode('camera')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+              feedMode === 'camera'
+                ? 'bg-blue-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Camera className="w-4 h-4" />
+            Live Camera
+          </button>
+          <button
+            onClick={() => setFeedMode('video')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+              feedMode === 'video'
+                ? 'bg-blue-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Video className="w-4 h-4" />
+            Upload Video
+          </button>
+        </div>
         <button
-          onClick={() => setFeedMode('camera')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
-            feedMode === 'camera'
-              ? 'bg-blue-600 text-white shadow'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
+          onClick={resetSession}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors shadow-lg"
+          title="Reset session and clear all data"
         >
-          <Camera className="w-4 h-4" />
-          Live Camera
-        </button>
-        <button
-          onClick={() => setFeedMode('video')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
-            feedMode === 'video'
-              ? 'bg-blue-600 text-white shadow'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Video className="w-4 h-4" />
-          Upload Video
+          <RotateCcw className="w-4 h-4" />
+          Reset Session
         </button>
       </div>
 
@@ -403,13 +494,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
           className={`w-full h-full object-cover ${streamActive ? 'block' : 'hidden'}`}
         />
         
-        {/* Backend-annotated image overlay (like results.plot_im) - blend with video */}
+        {/* Backend-annotated image overlay (like results.plot_im) - blend with video with smooth transitions */}
         {annotatedImage && (
           <img 
             src={annotatedImage}
             alt="Annotated detection"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-200"
-            style={{ zIndex: 9, opacity: 0.95 }}
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-300 ease-in-out"
+            style={{ zIndex: 9, opacity: annotationOpacity }}
             onError={() => setAnnotatedImage(null)} // Fallback if image fails to load
           />
         )}
@@ -460,11 +551,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
             </div>
           </div>
 
-          {/* Detection Box (Visual Decoration) */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
-            <div className="w-64 h-64 border-2 border-dashed border-green-500 rounded-lg"></div>
-          </div>
-
           {/* Results Toast */}
           {lastAnalysis && (
             <div className="self-center mb-8 bg-slate-900/90 backdrop-blur border border-slate-600 p-4 rounded-lg shadow-xl max-w-md transition-all duration-300">
@@ -488,15 +574,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog }) => {
               >
                 {isPlaying ? <Pause className="w-4 h-4"/> : <Play className="w-4 h-4"/>}
                 {isPlaying ? 'Pause' : 'Play'}
-              </button>
-            )}
-            {feedMode === 'video' && !videoLoaded && (
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors bg-green-600 hover:bg-green-500 text-white"
-              >
-                <Upload className="w-4 h-4"/>
-                Upload Video
               </button>
             )}
             <button 
