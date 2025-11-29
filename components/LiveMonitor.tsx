@@ -37,13 +37,16 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false); // Only for video file loaded state
   const [annotationOpacity, setAnnotationOpacity] = useState(0.95); // Smooth annotation overlay
+  const [showSummary, setShowSummary] = useState(false); // Show summary popup
+  const [videoSummary, setVideoSummary] = useState({ totalCount: 0, totalDefects: 0, totalGood: 0 }); // Video summary stats
 
   // Refs for frame capture optimization
   const frameRequestRef = useRef<number | null>(null);
   const lastCaptureTimeRef = useRef<number>(0);
   const pendingAnalysisRef = useRef<boolean>(false);
   const annotationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const MIN_CAPTURE_INTERVAL = 100; // Minimum 100ms between captures (10 FPS max)
+  const MIN_CAPTURE_INTERVAL = 50; // Reduced to 50ms for video mode (20 FPS) to reduce lag
+  const videoStatsRef = useRef({ totalCount: 0, totalDefects: 0, totalGood: 0 }); // Track video stats
 
   // Helper to stop any active media stream
   const stopMediaStream = useCallback(() => {
@@ -91,8 +94,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
     setVideoFile(null);
     setIsPlaying(false);
     setVideoLoaded(false);
+    setShowSummary(false);
     pendingAnalysisRef.current = false;
     lastCaptureTimeRef.current = 0;
+    videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
     
     // Clear file input
     if (fileInputRef.current) {
@@ -143,6 +148,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
       stopMediaStream();
       revokeVideoURL(); 
 
+      // Reset video statistics for new video
+      videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
+      setShowSummary(false);
+
       setVideoFile(file);
       const videoUrl = URL.createObjectURL(file);
       
@@ -187,9 +196,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
       return;
     }
 
-    // Throttle captures to prevent overwhelming the backend
+    // Throttle captures - use different interval for video vs camera
     const now = Date.now();
-    if (!skipThrottle && now - lastCaptureTimeRef.current < MIN_CAPTURE_INTERVAL) {
+    const captureInterval = feedMode === 'video' ? 50 : MIN_CAPTURE_INTERVAL; // Faster for video
+    if (!skipThrottle && now - lastCaptureTimeRef.current < captureInterval) {
       return;
     }
     
@@ -249,6 +259,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
           setAnnotatedImage(result.annotated_image);
           // Trigger fade-in after a brief delay
           setTimeout(() => setAnnotationOpacity(0.95), 10);
+        }
+        
+        // Track video statistics for summary
+        if (feedMode === 'video') {
+          videoStatsRef.current.totalCount += result.count;
+          videoStatsRef.current.totalDefects += result.defects;
+          videoStatsRef.current.totalGood += Math.max(0, result.count - result.defects);
         }
         
         // Only log if there are defects (as per requirement)
@@ -421,6 +438,16 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
       // Fade out annotation smoothly
       setAnnotationOpacity(0);
       setTimeout(() => setAnnotatedImage(null), 300);
+      
+      // Show summary popup with total count
+      if (feedMode === 'video') {
+        setVideoSummary({
+          totalCount: videoStatsRef.current.totalCount,
+          totalDefects: videoStatsRef.current.totalDefects,
+          totalGood: videoStatsRef.current.totalGood
+        });
+        setShowSummary(true);
+      }
     };
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
@@ -557,7 +584,6 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
               <div className="flex items-center gap-3 mb-2">
                 {lastAnalysis.defects > 0 ? <AlertTriangle className="text-yellow-500 w-5 h-5"/> : <CheckCircle className="text-green-500 w-5 h-5"/>}
                 <span className="font-bold text-lg text-white">Count: {lastAnalysis.count}</span>
-                <span className="text-sm text-slate-400">({lastAnalysis.defects} defects)</span>
               </div>
               <p className="text-xs text-slate-300 border-t border-slate-700 pt-2">
                 System: {lastAnalysis.reasoning}
@@ -576,21 +602,48 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
                 {isPlaying ? 'Pause' : 'Play'}
               </button>
             )}
-            <button 
-              onClick={captureAndAnalyze}
-              disabled={isAnalyzing || !streamActive}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors ${
-                isAnalyzing || !streamActive
-                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-500 text-white'
-              }`}
-            >
-              {isAnalyzing ? <RefreshCw className="w-4 h-4 animate-spin"/> : <Camera className="w-4 h-4"/>}
-              {isAnalyzing ? 'Processing...' : 'Manual Audit'}
-            </button>
           </div>
         </div>
       </div>
+
+      {/* Summary Popup Modal */}
+      {showSummary && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 rounded-xl p-8 max-w-md w-full mx-4 border border-slate-700 shadow-2xl">
+            <div className="text-center space-y-6">
+              <div className="flex justify-center">
+                <CheckCircle className="w-16 h-16 text-green-500" />
+              </div>
+              <h2 className="text-2xl font-bold text-white">Video Processing Complete</h2>
+              <div className="space-y-4 pt-4">
+                <div className="bg-slate-700 rounded-lg p-4">
+                  <div className="text-slate-400 text-sm mb-1">Total Items Detected</div>
+                  <div className="text-3xl font-bold text-white">{videoSummary.totalCount}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
+                    <div className="text-green-400 text-sm mb-1">Good Items</div>
+                    <div className="text-2xl font-bold text-green-400">{videoSummary.totalGood}</div>
+                  </div>
+                  <div className="bg-red-900/30 border border-red-700 rounded-lg p-4">
+                    <div className="text-red-400 text-sm mb-1">Defects</div>
+                    <div className="text-2xl font-bold text-red-400">{videoSummary.totalDefects}</div>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowSummary(false);
+                  videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
+                }}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-6 rounded-lg transition-colors mt-6"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
