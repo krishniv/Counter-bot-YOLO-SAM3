@@ -11,7 +11,7 @@ from ultralytics import solutions
 from typing import Optional, Dict
 
 # --- CONFIGURATION ---
-MODEL_PATH = "yolo11n.pt" 
+MODEL_PATH = "best.pt" 
 
 REGION_POINTS = [(50, 400), (590, 400)]  
 
