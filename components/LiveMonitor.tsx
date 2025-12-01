@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Camera, RefreshCw, AlertTriangle, CheckCircle, VideoOff, Upload, Play, Pause, Video, RotateCcw } from 'lucide-react';
-import { analyzeImageFrame } from '../services/visionService';
+import { VideoStreamWebSocket } from '../services/visionService';
 import { CountLog } from '../types';
 
 type FeedMode = 'camera' | 'video';
@@ -47,6 +47,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
   const annotationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const MIN_CAPTURE_INTERVAL = 50; // Reduced to 50ms for video mode (20 FPS) to reduce lag
   const videoStatsRef = useRef({ totalCount: 0, totalDefects: 0, totalGood: 0 }); // Track video stats
+  const wsRef = useRef<VideoStreamWebSocket | null>(null); // WebSocket connection
+  const [wsConnected, setWsConnected] = useState(false); // WebSocket connection status
+  const MAX_IMAGE_WIDTH = 640; // Optimize: resize images before sending
+  const MAX_IMAGE_HEIGHT = 480;
 
   // Helper to stop any active media stream
   const stopMediaStream = useCallback(() => {
@@ -66,6 +70,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
   // Reset session - clear all state and stop streams
   const resetSession = useCallback(() => {
+    // Disconnect WebSocket
+    if (wsRef.current) {
+      wsRef.current.disconnect();
+      wsRef.current = null;
+      setWsConnected(false);
+    }
+    
     // Stop all media streams
     stopMediaStream();
     revokeVideoURL();
@@ -203,6 +214,11 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
       return;
     }
     
+    // Skip if WebSocket is not connected
+    if (!wsRef.current || !wsRef.current.isConnected()) {
+      return;
+    }
+    
     // Skip if already processing (but allow queue for smoother flow)
     if (pendingAnalysisRef.current && !skipThrottle) {
       return;
@@ -230,68 +246,127 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         throw new Error("Failed to get canvas context");
       }
 
-      // Set canvas dimensions to match video frame exactly
-      canvasRef.current.width = videoWidth;
-      canvasRef.current.height = videoHeight;
+      // Optimize: Resize image if larger than max dimensions to reduce payload
+      let targetWidth = videoWidth;
+      let targetHeight = videoHeight;
       
-      // Draw current video frame to canvas (non-blocking)
-      context.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
+      if (videoWidth > MAX_IMAGE_WIDTH || videoHeight > MAX_IMAGE_HEIGHT) {
+        const scale = Math.min(MAX_IMAGE_WIDTH / videoWidth, MAX_IMAGE_HEIGHT / videoHeight);
+        targetWidth = Math.floor(videoWidth * scale);
+        targetHeight = Math.floor(videoHeight * scale);
+      }
+
+      // Set canvas dimensions to optimized size
+      canvasRef.current.width = targetWidth;
+      canvasRef.current.height = targetHeight;
       
-      // Convert canvas to base64 JPEG (lower quality for speed: 0.7)
-      const imageData = canvasRef.current.toDataURL('image/jpeg', 0.7);
+      // Draw current video frame to canvas (scaled if needed)
+      context.drawImage(videoRef.current, 0, 0, targetWidth, targetHeight);
+      
+      // Convert canvas to base64 JPEG (lower quality for speed: 0.6)
+      const imageData = canvasRef.current.toDataURL('image/jpeg', 0.6);
       
       if (!imageData || imageData.length < 100) {
         throw new Error("Failed to capture image data from canvas");
       }
       
-      // Call Backend Service asynchronously (don't await immediately to keep stream flowing)
-      analyzeImageFrame(imageData).then((result) => {
-        setLastAnalysis(result);
-        
-        // Store annotated image from backend if available with smooth transition
-        if (result.annotated_image) {
-          // Clear previous timeout
-          if (annotationTimeoutRef.current) {
-            clearTimeout(annotationTimeoutRef.current);
-          }
-          // Smooth fade-in for annotation
-          setAnnotationOpacity(0);
-          setAnnotatedImage(result.annotated_image);
-          // Trigger fade-in after a brief delay
-          setTimeout(() => setAnnotationOpacity(0.95), 10);
-        }
-        
-        // Track video statistics for summary
-        if (feedMode === 'video') {
-          videoStatsRef.current.totalCount += result.count;
-          videoStatsRef.current.totalDefects += result.defects;
-          videoStatsRef.current.totalGood += Math.max(0, result.count - result.defects);
-        }
-        
-        // Only log if there are defects (as per requirement)
-        if (result.defects > 0) {
-          onNewLog({
-            id: generateUUID(),
-            timestamp: new Date().toISOString(),
-            totalCount: result.count,
-            goodCount: Math.max(0, result.count - result.defects),
-            defectCount: result.defects,
-            imageUrl: result.annotated_image || imageData
-          });
-        }
-      }).catch((error) => {
-        console.error("Analysis failed:", error);
-      }).finally(() => {
-        setIsAnalyzing(false);
-        pendingAnalysisRef.current = false;
-      });
+      // Send frame via WebSocket (non-blocking, much faster than HTTP)
+      if (wsRef.current) {
+        wsRef.current.sendFrame(imageData);
+      }
       
     } catch (error) {
       console.error("Capture failed:", error);
       setIsAnalyzing(false);
       pendingAnalysisRef.current = false;
     }
-  }, [onNewLog, feedMode, videoLoaded, streamActive]);
+  }, [feedMode, videoLoaded, streamActive]);
+
+  // Initialize WebSocket connection for video streaming
+  useEffect(() => {
+    // Create WebSocket connection instance (but don't connect yet)
+    if (!wsRef.current) {
+      wsRef.current = new VideoStreamWebSocket();
+    }
+
+    // Connect WebSocket when component mounts or when needed
+    const connectWebSocket = async () => {
+      if (wsRef.current && !wsRef.current.isConnected()) {
+        console.log("Initializing WebSocket connection...");
+        await wsRef.current.connect(
+          (result) => {
+            // Handle analysis result
+            setLastAnalysis({
+              count: result.count,
+              defects: result.defects,
+              reasoning: result.reasoning
+            });
+            
+            // Store annotated image from backend if available with smooth transition
+            if (result.annotated_image) {
+              // Clear previous timeout
+              if (annotationTimeoutRef.current) {
+                clearTimeout(annotationTimeoutRef.current);
+              }
+              // Smooth fade-in for annotation
+              setAnnotationOpacity(0);
+              setAnnotatedImage(result.annotated_image);
+              // Trigger fade-in after a brief delay
+              setTimeout(() => setAnnotationOpacity(0.95), 10);
+            }
+            
+            // Track video statistics for summary
+            if (feedMode === 'video') {
+              videoStatsRef.current.totalCount += result.count;
+              videoStatsRef.current.totalDefects += result.defects;
+              videoStatsRef.current.totalGood += Math.max(0, result.count - result.defects);
+            }
+            
+            // Only log if there are defects (as per requirement)
+            if (result.defects > 0) {
+              onNewLog({
+                id: generateUUID(),
+                timestamp: new Date().toISOString(),
+                totalCount: result.count,
+                goodCount: Math.max(0, result.count - result.defects),
+                defectCount: result.defects,
+                imageUrl: result.annotated_image || ''
+              });
+            }
+            
+            // Reset pending flag
+            setIsAnalyzing(false);
+            pendingAnalysisRef.current = false;
+          },
+          (error) => {
+            console.error("WebSocket error:", error);
+            setIsAnalyzing(false);
+            pendingAnalysisRef.current = false;
+          },
+          () => {
+            console.log("✅ WebSocket connected");
+            setWsConnected(true);
+          },
+          () => {
+            console.log("⚠️ WebSocket disconnected");
+            setWsConnected(false);
+          }
+        );
+      }
+    };
+
+    // Connect immediately
+    connectWebSocket();
+
+    // Cleanup on unmount
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.disconnect();
+        wsRef.current = null;
+        setWsConnected(false);
+      }
+    };
+  }, [feedMode, onNewLog]);
 
   // Initialize camera/video when feedMode changes. Main cleanup on unmount.
   useEffect(() => {
@@ -570,13 +645,26 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         {/* Overlay HUD */}
         <div className="absolute inset-0 pointer-events-none p-4 flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-slate-700 text-xs text-green-400 font-mono animate-pulse">
-              ● {feedMode === 'camera' ? 'LIVE FEED' : 'VIDEO PLAYBACK'} • BACKEND CONNECTED
+            <div className={`bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-slate-700 text-xs font-mono ${wsConnected ? 'text-green-400 animate-pulse' : 'text-yellow-400'}`}>
+              ● {feedMode === 'camera' ? 'LIVE FEED' : 'VIDEO PLAYBACK'} • {wsConnected ? 'WEBSOCKET CONNECTED' : 'CONNECTING...'}
             </div>
             <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-slate-700 text-xs text-blue-300 font-mono">
               MODEL: YOLO11-NANO
             </div>
           </div>
+          
+          {/* WebSocket Connection Error Warning */}
+          {!wsConnected && streamActive && (
+            <div className="self-center mt-4 bg-yellow-900/90 backdrop-blur border border-yellow-700 p-3 rounded-lg shadow-xl max-w-md pointer-events-auto">
+              <div className="flex items-center gap-2 text-yellow-300 text-sm">
+                <AlertTriangle className="w-4 h-4" />
+                <span className="font-semibold">WebSocket Connecting...</span>
+              </div>
+              <p className="text-xs text-yellow-400 mt-1">
+                Ensure backend is running on port 8000. Check browser console for details.
+              </p>
+            </div>
+          )}
 
           {/* Results Toast */}
           {lastAnalysis && (

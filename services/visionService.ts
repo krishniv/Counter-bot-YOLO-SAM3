@@ -2,6 +2,7 @@ import { CountLog } from "../types";
 
 // Configuration for the local FastAPI backend
 const API_BASE_URL = "http://localhost:8000";
+const WS_BASE_URL = "ws://localhost:8000";
 
 export interface AnalysisResult {
   count: number;
@@ -9,6 +10,213 @@ export interface AnalysisResult {
   reasoning: string;
   annotated_image?: string; // Base64 encoded annotated image from backend
   latency_ms: number;
+}
+
+// WebSocket connection manager for video streaming
+export class VideoStreamWebSocket {
+  private ws: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelay = 1000;
+  private messageQueue: string[] = [];
+  private isConnecting = false;
+  private onMessageCallback: ((result: AnalysisResult) => void) | null = null;
+  private onErrorCallback: ((error: string) => void) | null = null;
+  private onConnectCallback: (() => void) | null = null;
+  private onDisconnectCallback: (() => void) | null = null;
+
+  constructor() {
+    // Initialize connection lazily
+  }
+
+  async connect(
+    onMessage: (result: AnalysisResult) => void,
+    onError?: (error: string) => void,
+    onConnect?: () => void,
+    onDisconnect?: () => void
+  ) {
+    this.onMessageCallback = onMessage;
+    this.onErrorCallback = onError;
+    this.onConnectCallback = onConnect;
+    this.onDisconnectCallback = onDisconnect;
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      if (onConnect) onConnect();
+      return;
+    }
+
+    if (this.isConnecting) {
+      return;
+    }
+
+    // Check if backend is reachable before attempting WebSocket connection
+    try {
+      const healthCheck = await fetch(`${API_BASE_URL}/`);
+      if (!healthCheck.ok) {
+        throw new Error(`Backend health check failed: ${healthCheck.status}`);
+      }
+      console.log("✅ Backend health check passed");
+    } catch (error) {
+      console.error("❌ Backend not reachable:", error);
+      if (this.onErrorCallback) {
+        this.onErrorCallback(`Backend not reachable at ${API_BASE_URL}. Please ensure the backend is running.`);
+      }
+      return;
+    }
+
+    this.isConnecting = true;
+    
+    try {
+      const wsUrl = `${WS_BASE_URL}/ws/video`;
+      console.log(`Attempting WebSocket connection to: ${wsUrl}`);
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onopen = () => {
+        console.log("✅ WebSocket connected successfully for video streaming");
+        this.isConnecting = false;
+        this.reconnectAttempts = 0;
+        
+        // Send any queued messages
+        while (this.messageQueue.length > 0) {
+          const message = this.messageQueue.shift();
+          if (message && this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(message);
+          }
+        }
+
+        if (this.onConnectCallback) {
+          this.onConnectCallback();
+        }
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.type === "result") {
+            const result: AnalysisResult = {
+              count: data.count || 0,
+              defects: data.defects || 0,
+              reasoning: data.reasoning || `Detected ${data.count || 0} tracked cookie(s)`,
+              annotated_image: data.annotated_image,
+              latency_ms: data.latency_ms || 0
+            };
+            
+            if (this.onMessageCallback) {
+              this.onMessageCallback(result);
+            }
+          } else if (data.error) {
+            console.error("WebSocket server error:", data.error);
+            if (this.onErrorCallback) {
+              this.onErrorCallback(data.error);
+            }
+          }
+        } catch (error) {
+          console.error("Error parsing WebSocket message:", error);
+          if (this.onErrorCallback) {
+            this.onErrorCallback("Failed to parse server response");
+          }
+        }
+      };
+
+      this.ws.onerror = (error) => {
+        console.error("❌ WebSocket connection error:", error);
+        console.error("   Make sure the backend is running on port 8000");
+        console.error("   URL attempted:", `${WS_BASE_URL}/ws/video`);
+        this.isConnecting = false;
+        if (this.onErrorCallback) {
+          this.onErrorCallback(`WebSocket connection failed. Ensure backend is running at ${WS_BASE_URL}`);
+        }
+      };
+
+      this.ws.onclose = (event) => {
+        console.log(`WebSocket disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
+        this.isConnecting = false;
+        
+        if (this.onDisconnectCallback) {
+          this.onDisconnectCallback();
+        }
+
+        // Attempt to reconnect if not manually closed and not a normal closure
+        if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
+          console.log(`Retrying WebSocket connection in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+          setTimeout(() => {
+            if (this.onMessageCallback && !this.ws) {
+              this.connect(
+                this.onMessageCallback,
+                this.onErrorCallback || undefined,
+                this.onConnectCallback || undefined,
+                this.onDisconnectCallback || undefined
+              );
+            }
+          }, delay);
+        } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          console.error("❌ Max WebSocket reconnection attempts reached. Please check backend connection.");
+        }
+      };
+    } catch (error) {
+      console.error("❌ Failed to create WebSocket:", error);
+      this.isConnecting = false;
+      if (this.onErrorCallback) {
+        this.onErrorCallback(`Failed to create WebSocket: ${error}`);
+      }
+    }
+  }
+
+  sendFrame(base64Image: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Queue message if not connected
+      const message = JSON.stringify({
+        type: "frame",
+        image: base64Image
+      });
+      this.messageQueue.push(message);
+      
+      // Try to reconnect if not already connecting
+      if (!this.isConnecting && this.onMessageCallback) {
+        this.connect(
+          this.onMessageCallback,
+          this.onErrorCallback || undefined,
+          this.onConnectCallback || undefined,
+          this.onDisconnectCallback || undefined
+        );
+      }
+      return;
+    }
+
+    try {
+      const message = JSON.stringify({
+        type: "frame",
+        image: base64Image
+      });
+      this.ws.send(message);
+    } catch (error) {
+      console.error("Error sending frame:", error);
+      if (this.onErrorCallback) {
+        this.onErrorCallback("Failed to send frame");
+      }
+    }
+  }
+
+  disconnect() {
+    if (this.ws) {
+      try {
+        this.ws.send(JSON.stringify({ type: "close" }));
+      } catch (error) {
+        console.error("Error sending close message:", error);
+      }
+      this.ws.close();
+      this.ws = null;
+    }
+    this.messageQueue = [];
+    this.reconnectAttempts = this.maxReconnectAttempts; // Prevent reconnection
+  }
+
+  isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
 }
 
 /**

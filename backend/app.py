@@ -397,9 +397,16 @@ async def websocket_video_stream(websocket: WebSocket):
                 image_rgb = cv2.cvtColor(annotated_image_bgr, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(image_rgb)
                 buffer = io.BytesIO()
-                pil_image.save(buffer, format='JPEG', quality=85)  # Lower quality for speed
+                pil_image.save(buffer, format='JPEG', quality=75, optimize=True)  # Lower quality for speed
                 image_bytes = buffer.getvalue()
                 base64_str = base64.b64encode(image_bytes).decode('utf-8')
+                
+                # Build reasoning string
+                reasoning = f"Detected {object_count} tracked cookie(s)"
+                if defects_count > 0:
+                    reasoning += f", {defects_count} defective"
+                if object_count == 0:
+                    reasoning = "No cookies detected in frame"
                 
                 latency_ms = (time.time() - start_time) * 1000
                 
@@ -408,6 +415,7 @@ async def websocket_video_stream(websocket: WebSocket):
                     "type": "result",
                     "count": object_count,
                     "defects": defects_count,
+                    "reasoning": reasoning,
                     "annotated_image": f"data:image/jpeg;base64,{base64_str}",
                     "latency_ms": latency_ms
                 })
