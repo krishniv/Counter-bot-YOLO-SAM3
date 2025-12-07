@@ -39,6 +39,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
   const [annotationOpacity, setAnnotationOpacity] = useState(0.95); // Smooth annotation overlay
   const [showSummary, setShowSummary] = useState(false); // Show summary popup
   const [videoSummary, setVideoSummary] = useState({ totalCount: 0, totalDefects: 0, totalGood: 0 }); // Video summary stats
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.75); // Default to 0.75x speed for smoother playback
+  const [totalCountDisplay, setTotalCountDisplay] = useState(0); // Total count for display
 
   // Refs for frame capture optimization
   const frameRequestRef = useRef<number | null>(null);
@@ -106,6 +108,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
     setIsPlaying(false);
     setVideoLoaded(false);
     setShowSummary(false);
+    setTotalCountDisplay(0);
     pendingAnalysisRef.current = false;
     lastCaptureTimeRef.current = 0;
     videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
@@ -161,6 +164,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
       // Reset video statistics for new video
       videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
+      setTotalCountDisplay(0);
       setShowSummary(false);
 
       setVideoFile(file);
@@ -170,6 +174,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         videoRef.current.srcObject = null;
         videoRef.current.src = videoUrl;
         videoRef.current.load();
+        // Set playback speed when video is loaded
+        videoRef.current.playbackRate = playbackSpeed;
         setStreamActive(true); // Stream is active once video is loaded/playing
         setVideoLoaded(false); // Will be set to true in handleVideoLoaded
       }
@@ -183,7 +189,11 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
   const handleVideoLoaded = useCallback(() => {
     setVideoLoaded(true);
     setStreamActive(true);
-  }, []);
+    // Set playback speed when video loads
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed]);
 
   const togglePlayPause = () => {
     if (videoRef.current) {
@@ -194,6 +204,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         videoRef.current.pause();
         setIsPlaying(false);
       }
+    }
+  };
+
+  const handlePlaybackSpeedChange = (speed: number) => {
+    setPlaybackSpeed(speed);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = speed;
     }
   };
 
@@ -320,6 +337,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
               videoStatsRef.current.totalCount += result.count;
               videoStatsRef.current.totalDefects += result.defects;
               videoStatsRef.current.totalGood += Math.max(0, result.count - result.defects);
+              // Update total count display for video mode
+              setTotalCountDisplay(videoStatsRef.current.totalCount);
             }
             
             // Only log if there are defects (as per requirement)
@@ -372,12 +391,16 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
   useEffect(() => {
     if (feedMode === 'camera') {
       startCamera();
+      // Reset count display when switching to camera
+      setTotalCountDisplay(0);
     } else if (feedMode === 'video') {
       // If switching to video mode, stop camera stream and ensure UI reflects 'ready for upload'
       stopMediaStream();
       setStreamActive(false);
       setVideoLoaded(false);
       setIsPlaying(false);
+      // Reset count display when switching to video
+      setTotalCountDisplay(0);
     }
 
     // Comprehensive component unmount cleanup
@@ -499,6 +522,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
     const handleEnded = () => {
       setIsPlaying(false);
+      // Ensure video is paused after ending
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
       // Graceful exit when video ends - stop analysis and cleanup
       if (frameRequestRef.current !== null) {
         if ('cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
@@ -666,12 +693,22 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
             </div>
           )}
 
+          {/* Total Count Display - Prominent (Video Mode Only) */}
+          {feedMode === 'video' && streamActive && totalCountDisplay > 0 && (
+            <div className="self-center mb-4 bg-blue-900/90 backdrop-blur border-2 border-blue-500 p-4 rounded-lg shadow-xl">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="text-blue-300 w-6 h-6"/>
+  
+              </div>
+            </div>
+          )}
+
           {/* Results Toast */}
           {lastAnalysis && (
             <div className="self-center mb-8 bg-slate-900/90 backdrop-blur border border-slate-600 p-4 rounded-lg shadow-xl max-w-md transition-all duration-300">
               <div className="flex items-center gap-3 mb-2">
                 {lastAnalysis.defects > 0 ? <AlertTriangle className="text-yellow-500 w-5 h-5"/> : <CheckCircle className="text-green-500 w-5 h-5"/>}
-                <span className="font-bold text-lg text-white">Count: {lastAnalysis.count}</span>
+                <span className="font-bold text-lg text-white">Frame Count: {lastAnalysis.count}</span>
               </div>
               <p className="text-xs text-slate-300 border-t border-slate-700 pt-2">
                 System: {lastAnalysis.reasoning}
@@ -682,56 +719,38 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
           {/* Controls */}
           <div className="flex justify-end gap-2 pointer-events-auto">
             {feedMode === 'video' && videoLoaded && (
-              <button 
-                onClick={togglePlayPause}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors bg-purple-600 hover:bg-purple-500 text-white"
-              >
-                {isPlaying ? <Pause className="w-4 h-4"/> : <Play className="w-4 h-4"/>}
-                {isPlaying ? 'Pause' : 'Play'}
-              </button>
+              <>
+                {/* Playback Speed Control */}
+                <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-2 rounded-lg border border-slate-700">
+                  <label className="text-xs text-slate-300">Speed:</label>
+                  <select
+                    value={playbackSpeed}
+                    onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
+                    className="bg-slate-700 text-white text-xs px-2 py-1 rounded border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="0.25">0.25x</option>
+                    <option value="0.5">0.5x</option>
+                    <option value="0.75">0.75x</option>
+                    <option value="1.0">1.0x</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2.0">2.0x</option>
+                  </select>
+                </div>
+                <button 
+                  onClick={togglePlayPause}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors bg-purple-600 hover:bg-purple-500 text-white"
+                >
+                  {isPlaying ? <Pause className="w-4 h-4"/> : <Play className="w-4 h-4"/>}
+                  {isPlaying ? 'Pause' : 'Play'}
+                </button>
+              </>
             )}
           </div>
         </div>
       </div>
 
-      {/* Summary Popup Modal */}
-      {showSummary && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-xl p-8 max-w-md w-full mx-4 border border-slate-700 shadow-2xl">
-            <div className="text-center space-y-6">
-              <div className="flex justify-center">
-                <CheckCircle className="w-16 h-16 text-green-500" />
-              </div>
-              <h2 className="text-2xl font-bold text-white">Video Processing Complete</h2>
-              <div className="space-y-4 pt-4">
-                <div className="bg-slate-700 rounded-lg p-4">
-                  <div className="text-slate-400 text-sm mb-1">Total Items Detected</div>
-                  <div className="text-3xl font-bold text-white">{videoSummary.totalCount}</div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
-                    <div className="text-green-400 text-sm mb-1">Good Items</div>
-                    <div className="text-2xl font-bold text-green-400">{videoSummary.totalGood}</div>
-                  </div>
-                  <div className="bg-red-900/30 border border-red-700 rounded-lg p-4">
-                    <div className="text-red-400 text-sm mb-1">Defects</div>
-                    <div className="text-2xl font-bold text-red-400">{videoSummary.totalDefects}</div>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setShowSummary(false);
-                  videoStatsRef.current = { totalCount: 0, totalDefects: 0, totalGood: 0 };
-                }}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-6 rounded-lg transition-colors mt-6"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      
     </div>
   );
 };
