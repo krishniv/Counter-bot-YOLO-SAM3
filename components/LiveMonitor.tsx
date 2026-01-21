@@ -579,13 +579,13 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
     <div className="space-y-4">
       {/* Mode Selector and Reset Button */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700 w-fit">
+        <div className="flex items-center gap-2 bg-[#000533] p-1 rounded-lg border border-[#000a66] w-fit">
           <button
             onClick={() => setFeedMode('camera')}
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
               feedMode === 'camera'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-[#3347ff] text-[#e5e8ff] shadow'
+                : 'text-[#99a3ff] hover:text-[#ccd1ff]'
             }`}
           >
             <Camera className="w-4 h-4" />
@@ -595,8 +595,8 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
             onClick={() => setFeedMode('video')}
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
               feedMode === 'video'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-[#3347ff] text-[#e5e8ff] shadow'
+                : 'text-[#99a3ff] hover:text-[#ccd1ff]'
             }`}
           >
             <Video className="w-4 h-4" />
@@ -605,7 +605,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         </div>
         <button
           onClick={resetSession}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors shadow-lg"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#3347ff] hover:bg-[#0019ff] text-[#e5e8ff] text-sm font-medium transition-colors shadow-lg"
           title="Reset session and clear all data"
         >
           <RotateCcw className="w-4 h-4" />
@@ -613,7 +613,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         </button>
       </div>
 
-      <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-700 group">
+      <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-2xl border border-[#000a66] group">
         <video 
           ref={videoRef}
           autoPlay={feedMode === 'camera'}
@@ -645,10 +645,10 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
         {/* Camera Feed Unavailable */}
         {!streamActive && feedMode === 'camera' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-[#99a3ff]">
             <VideoOff className="w-12 h-12 mb-2" />
             <p>Camera feed unavailable</p>
-            <button onClick={startCamera} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-500">
+            <button onClick={startCamera} className="mt-4 px-4 py-2 bg-[#3347ff] text-[#e5e8ff] rounded hover:bg-[#0019ff]">
               Retry Connection
             </button>
           </div>
@@ -656,12 +656,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
         {/* Upload Video Prompt */}
         {feedMode === 'video' && !videoLoaded && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-[#99a3ff]">
             <Upload className="w-12 h-12 mb-2" />
             <p>No video uploaded</p>
             <button 
               onClick={() => fileInputRef.current?.click()} 
-              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-500 flex items-center gap-2"
+              className="mt-4 px-4 py-2 bg-[#3347ff] text-[#e5e8ff] rounded hover:bg-[#0019ff] flex items-center gap-2"
             >
               <Upload className="w-4 h-4" />
               Upload Video File
@@ -672,22 +672,22 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
         {/* Overlay HUD */}
         <div className="absolute inset-0 pointer-events-none p-4 flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <div className={`bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-slate-700 text-xs font-mono ${wsConnected ? 'text-green-400 animate-pulse' : 'text-yellow-400'}`}>
+            <div className={`bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-[#000a66] text-xs font-mono ${wsConnected ? 'text-[#6675ff] animate-pulse' : 'text-[#6675ff]'}`}>
               ● {feedMode === 'camera' ? 'LIVE FEED' : 'VIDEO PLAYBACK'} • {wsConnected ? 'WEBSOCKET CONNECTED' : 'CONNECTING...'}
             </div>
-            <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-slate-700 text-xs text-blue-300 font-mono">
+            <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded border border-[#000a66] text-xs text-[#6675ff] font-mono">
               MODEL: YOLO11-NANO
             </div>
           </div>
           
           {/* WebSocket Connection Error Warning */}
           {!wsConnected && streamActive && (
-            <div className="self-center mt-4 bg-yellow-900/90 backdrop-blur border border-yellow-700 p-3 rounded-lg shadow-xl max-w-md pointer-events-auto">
-              <div className="flex items-center gap-2 text-yellow-300 text-sm">
+            <div className="self-center mt-4 bg-[#000533]/90 backdrop-blur border border-[#3347ff] p-3 rounded-lg shadow-xl max-w-md pointer-events-auto">
+              <div className="flex items-center gap-2 text-[#ccd1ff] text-sm">
                 <AlertTriangle className="w-4 h-4" />
                 <span className="font-semibold">WebSocket Connecting...</span>
               </div>
-              <p className="text-xs text-yellow-400 mt-1">
+              <p className="text-xs text-[#ccd1ff] mt-1">
                 Ensure backend is running on port 8000. Check browser console for details.
               </p>
             </div>
@@ -695,9 +695,9 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
           {/* Total Count Display - Prominent (Video Mode Only) */}
           {feedMode === 'video' && streamActive && totalCountDisplay > 0 && (
-            <div className="self-center mb-4 bg-blue-900/90 backdrop-blur border-2 border-blue-500 p-4 rounded-lg shadow-xl">
+            <div className="self-center mb-4 bg-[#000533]/90 backdrop-blur border-2 border-[#3347ff] p-4 rounded-lg shadow-xl">
               <div className="flex items-center gap-3">
-                <CheckCircle className="text-blue-300 w-6 h-6"/>
+                <CheckCircle className="text-[#6675ff] w-6 h-6"/>
   
               </div>
             </div>
@@ -705,12 +705,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
 
           {/* Results Toast */}
           {lastAnalysis && (
-            <div className="self-center mb-8 bg-slate-900/90 backdrop-blur border border-slate-600 p-4 rounded-lg shadow-xl max-w-md transition-all duration-300">
+            <div className="self-center mb-8 bg-[#000424]/90 backdrop-blur border border-[#000a66] p-4 rounded-lg shadow-xl max-w-md transition-all duration-300">
               <div className="flex items-center gap-3 mb-2">
-                {lastAnalysis.defects > 0 ? <AlertTriangle className="text-yellow-500 w-5 h-5"/> : <CheckCircle className="text-green-500 w-5 h-5"/>}
-                <span className="font-bold text-lg text-white">Frame Count: {lastAnalysis.count}</span>
+                {lastAnalysis.defects > 0 ? <AlertTriangle className="text-[#6675ff] w-5 h-5"/> : <CheckCircle className="text-[#6675ff] w-5 h-5"/>}
+                <span className="font-bold text-lg text-[#e5e8ff]">Frame Count: {lastAnalysis.count}</span>
               </div>
-              <p className="text-xs text-slate-300 border-t border-slate-700 pt-2">
+              <p className="text-xs text-[#ccd1ff] border-t border-[#000a66] pt-2">
                 System: {lastAnalysis.reasoning}
               </p>
             </div>
@@ -721,12 +721,12 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
             {feedMode === 'video' && videoLoaded && (
               <>
                 {/* Playback Speed Control */}
-                <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-2 rounded-lg border border-slate-700">
-                  <label className="text-xs text-slate-300">Speed:</label>
+                <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-2 rounded-lg border border-[#000a66]">
+                  <label className="text-xs text-[#ccd1ff]">Speed:</label>
                   <select
                     value={playbackSpeed}
                     onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
-                    className="bg-slate-700 text-white text-xs px-2 py-1 rounded border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="bg-[#000533] text-[#e5e8ff] text-xs px-2 py-1 rounded border border-[#000a66] focus:outline-none focus:ring-2 focus:ring-[#3347ff]"
                   >
                     <option value="0.25">0.25x</option>
                     <option value="0.5">0.5x</option>
@@ -739,7 +739,7 @@ const LiveMonitor: React.FC<LiveMonitorProps> = ({ onNewLog, onResetSession }) =
                 </div>
                 <button 
                   onClick={togglePlayPause}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors bg-purple-600 hover:bg-purple-500 text-white"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold shadow-lg transition-colors bg-[#3347ff] hover:bg-[#0019ff] text-[#e5e8ff]"
                 >
                   {isPlaying ? <Pause className="w-4 h-4"/> : <Play className="w-4 h-4"/>}
                   {isPlaying ? 'Pause' : 'Play'}
