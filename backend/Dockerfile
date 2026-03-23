@@ -18,8 +18,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and model weights
 COPY app.py .
+COPY weights/ weights/
 
 # Expose port
 EXPOSE 8000
