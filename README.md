@@ -24,3 +24,6 @@
 ## Fine Tuning Yolo nano with SAM2 segmentations
 
 https://github.com/krishniv/Colab-tutorials/blob/main/Yoloexps_with_SAM.ipynb
+
+https://github.com/user-attachments/assets/46d226c9-efbc-4b06-a02c-f36884a8227f
+
