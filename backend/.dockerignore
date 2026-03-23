@@ -11,5 +11,5 @@ venv/
 .env.local
 count_logs.log
 *.pt
-!yolo11n.pt
+!weights/best.pt
 

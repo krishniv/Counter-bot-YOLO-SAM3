@@ -1,3 +1,4 @@
+import os
 import time
 import base64
 import io
@@ -13,7 +14,7 @@ import asyncio
 import json
 
 # --- CONFIGURATION ---
-MODEL_PATH = "/Users/krishnaniveditha/Desktop/qualityvision-ai/backend/best.pt" 
+MODEL_PATH = os.environ.get("MODEL_PATH", "weights/best.pt")
 
 REGION_POINTS = [(50, 400), (590, 400)]
 

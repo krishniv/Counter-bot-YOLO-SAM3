@@ -1,8 +1,8 @@
 import { CountLog } from "../types";
 
-// Configuration for the local FastAPI backend
-const API_BASE_URL = "http://localhost:8000";
-const WS_BASE_URL = "ws://localhost:8000";
+// Configuration for the local FastAPI backend using environment variables
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
 
 export interface AnalysisResult {
   count: number;
