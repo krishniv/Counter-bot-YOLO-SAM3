@@ -21,6 +21,6 @@
    npm run dev
    ```
 
-## Authentication
+## Fine Tuning Yolo nano with SAM2 segmentations
 
-This app uses Clerk for authentication. Users must sign in to access the quality monitoring dashboard. The authentication UI is automatically handled by Clerk components.
+https://github.com/krishniv/Colab-tutorials/blob/main/Yoloexps_with_SAM.ipynb
